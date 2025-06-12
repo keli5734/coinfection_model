@@ -1,0 +1,176 @@
+functions {
+  real viral_load(real t, real Vp, real tp, real lg, real ld) {
+    return 2 * Vp
+      / (exp(-lg * (t - tp)) + exp(ld * (t - tp)));
+  }
+}
+data {
+  int<lower=1> N;               // total observations
+  vector[N]    time;            // time since primary inoculation
+  vector[N]    y;               // measured viral load (or lod if censored)
+  real<lower=0> lod[N];         // assay limit of detection
+  int<lower=0,upper=1> censored[N]; // 1 = below LOD
+  int<lower=1,upper=2> virus[N];    // 1=IAV obs, 2=RSV obs
+  int<lower=1> sample_id[N];        // which ferret-pair (1…S)
+  int<lower=1> S;               // number of distinct pairs
+  vector[S]    delta;           // challenge delays per pair
+  int<lower=1,upper=2> primary[S];  // 1=IAV→RSV, 2=RSV→IAV
+
+  // From control‐only fits (posterior medians)
+  real control_VpI_log;
+  real control_tpI;
+  real control_lgI;
+  real control_ldI;
+
+  real control_VpR_log;
+  real control_tpR;
+  real control_lgR;
+  real control_ldR;
+}
+parameters {
+  // Hierarchical hyper-means & sds for IAV kinetics
+  real        mu_VpI_log;    real<lower=0> sigma_VpI_log;
+  real        mu_tpI;        real<lower=0> sigma_tpI;
+  real        mu_lgI;        real<lower=0> sigma_lgI;
+  real        mu_ldI;        real<lower=0> sigma_ldI;
+
+  // Hierarchical hyper-means & sds for RSV kinetics
+  real        mu_VpR_log;    real<lower=0> sigma_VpR_log;
+  real        mu_tpR;        real<lower=0> sigma_tpR;
+  real        mu_lgR;        real<lower=0> sigma_lgR;
+  real        mu_ldR;        real<lower=0> sigma_ldR;
+
+  // Kernel shape hyper-priors
+  real        mu_kI;         real<lower=0> sigma_kI;
+  real        mu_tI;         real<lower=0> sigma_tI;
+  real        mu_kR;         real<lower=0> sigma_kR;
+  real        mu_tR;         real<lower=0> sigma_tR;
+  real        mu_aI;         real<lower=0> sigma_aI;
+  real        mu_aR;         real<lower=0> sigma_aR;
+
+  real<lower=0> sigma;       // measurement noise
+
+  // Per-pair parameters
+  vector[S]   VpI_log;
+  vector[S]   tpI;
+  vector[S]   lgI;
+  vector[S]   ldI;
+
+  vector[S]   VpR_log;
+  vector[S]   tpR;
+  vector[S]   lgR;
+  vector[S]   ldR;
+
+  vector[S]   kI;
+  vector[S]   tI;
+  vector[S]   kR;
+  vector[S]   tR;
+  vector<lower=0>[S] aI;
+  vector<lower=0>[S] aR;
+}
+transformed parameters {
+  vector[S] VpI = pow(10, VpI_log);
+  vector[S] VpR = pow(10, VpR_log);
+}
+model {
+  // --- Informative (narrow) priors from controls ---
+  mu_VpI_log ~ normal(control_VpI_log, 0.5); 
+  mu_tpI     ~ normal(control_tpI,     0.5);
+  mu_lgI     ~ normal(control_lgI,     0.5);
+  mu_ldI     ~ normal(control_ldI,     0.5);
+
+  mu_VpR_log ~ normal(control_VpR_log, 0.5);
+  mu_tpR     ~ normal(control_tpR,     0.5);
+  mu_lgR     ~ normal(control_lgR,     0.5);
+  mu_ldR     ~ normal(control_ldR,     0.5);
+
+  // Hyperpriors on spreads
+  sigma_VpI_log ~ cauchy(0,0.5);
+  sigma_tpI     ~ cauchy(0,0.5);
+  sigma_lgI     ~ cauchy(0,0.5);
+  sigma_ldI     ~ cauchy(0,0.5);
+
+  sigma_VpR_log ~ cauchy(0,0.5);
+  sigma_tpR     ~ cauchy(0,0.5);
+  sigma_lgR     ~ cauchy(0,0.5);
+  sigma_ldR     ~ cauchy(0,0.5);
+
+  mu_kI  ~ normal(3,2); sigma_kI ~ cauchy(0,1);
+  mu_tI  ~ normal(5,2); sigma_tI ~ cauchy(0,1);
+  
+  mu_kR  ~ normal(3,2); sigma_kR ~ cauchy(0,1);
+  mu_tR  ~ normal(5,2); sigma_tR ~ cauchy(0,1);
+  
+  mu_aI  ~ normal(1,2); sigma_aI ~ cauchy(0,1);
+  mu_aR  ~ normal(1,2); sigma_aR ~ cauchy(0,1);
+
+  sigma  ~ cauchy(0,1);
+
+  // Hierarchical pooling
+  VpI_log ~ normal(mu_VpI_log, sigma_VpI_log);
+  tpI     ~ normal(mu_tpI,     sigma_tpI);
+  lgI     ~ normal(mu_lgI,     sigma_lgI);
+  ldI     ~ normal(mu_ldI,     sigma_ldI);
+
+  VpR_log ~ normal(mu_VpR_log, sigma_VpR_log);
+  tpR     ~ normal(mu_tpR,     sigma_tpR);
+  lgR     ~ normal(mu_lgR,     sigma_lgR);
+  ldR     ~ normal(mu_ldR,     sigma_ldR);
+
+  kI ~ normal(mu_kI, sigma_kI);
+  tI ~ normal(mu_tI, sigma_tI);
+  kR ~ normal(mu_kR, sigma_kR);
+  tR ~ normal(mu_tR, sigma_tR);
+  aI ~ normal(mu_aI, sigma_aI);
+  aR ~ normal(mu_aR, sigma_aR);
+
+  // --- Likelihood with left‐censoring ---
+  for (i in 1:N) {
+    int s = sample_id[i];
+    real ti = time[i];
+    real L_I = inv_logit(kI[s] * (delta[s] - tI[s]));
+    real L_R = inv_logit(kR[s] * (delta[s] - tR[s]));
+    real hI  = (1 + aI[s]*L_I) / (1 + aI[s]);
+    real hR  = (1 + aR[s]*L_R) / (1 + aR[s]);
+    real pred;
+
+    if (virus[i] == 1) {
+      // IAV obs
+      if (primary[s] == 1) {
+        pred = viral_load(ti, VpI[s], tpI[s], lgI[s], ldI[s]);
+      } else {
+        real t0 = tpR[s] + delta[s];
+        if (ti < t0) {
+          // pre‐challenge: treat as censored at tiny floor
+          if (censored[i]==0)
+            target += normal_lpdf(log10(y[i]) | log10(1e-6), sigma);
+          else
+            target += normal_lcdf(log10(lod[i]) | log10(1e-6), sigma);
+          continue;
+        }
+        pred = viral_load(ti-t0, VpI[s], tpI[s], lgI[s], ldI[s]) * hR;
+      }
+    } else {
+      // RSV obs
+      if (primary[s] == 1) {
+        real t0 = tpI[s] + delta[s];
+        if (ti < t0) {
+          if (censored[i]==0)
+            target += normal_lpdf(log10(y[i]) | log10(1e-6), sigma);
+          else
+            target += normal_lcdf(log10(lod[i]) | log10(1e-6), sigma);
+          continue;
+        }
+        pred = viral_load(ti-t0, VpR[s], tpR[s], lgR[s], ldR[s]) * hI;
+      } else {
+        pred = viral_load(ti, VpR[s], tpR[s], lgR[s], ldR[s]);
+      }
+    }
+
+    pred = fmax(pred, 1e-6);
+    if (censored[i] == 0)
+      target += normal_lpdf(log10(y[i]) | log10(pred), sigma);
+    else
+      target += normal_lcdf(log10(lod[i]) | log10(pred), sigma);
+  }
+}
