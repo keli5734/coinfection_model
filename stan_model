@@ -139,7 +139,7 @@ model {
       if (primary[s] == 1) {
         pred = viral_load(ti, VpI[s], tpI[s], lgI[s], ldI[s]);
       } else {
-        real t0 = tpR[s] + delta[s];
+        real t0 = delta[s];
         if (ti < t0) {
           // pre‐challenge: treat as censored at tiny floor
           if (censored[i]==0)
@@ -153,7 +153,7 @@ model {
     } else {
       // RSV obs
       if (primary[s] == 1) {
-        real t0 = tpI[s] + delta[s];
+        real t0 =  delta[s];
         if (ti < t0) {
           if (censored[i]==0)
             target += normal_lpdf(log10(y[i]) | log10(1e-6), sigma);
