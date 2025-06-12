@@ -1,0 +1,345 @@
+library(tidyr)
+library(deSolve)
+library(dplyr)
+
+ 
+
+
+set.seed(20250611)
+
+#setwd(dir = "empirical model/")
+combined_data <- readRDS("combined_data.rds")
+
+
+empirical_fn <- function(parameters, dat) {
+  
+  # IAV parameters 
+  aa1 <- parameters[1]
+  aa2 <- parameters[2]
+  aa3 <- parameters[3]
+  aa4 <- parameters[4]
+  
+  # RSV parameters 
+  aa5 <- parameters[5]
+  aa6 <- parameters[6]
+  aa7 <- parameters[7]
+  aa8 <- parameters[8]
+  
+  # IAV -> RSV parameters 
+  aa9 <- parameters[9]
+  aa10 <- parameters[10]
+  
+  # RSV -> IAV parameters
+  aa11 <- parameters[11]
+  aa12 <- parameters[12]
+  
+  aa13 <- parameters[13]
+  aa14 <- parameters[14]
+  
+  Vp_IAV <<- aa1
+  tp_IAV <<- aa2
+  lg_IAV <<- aa3
+  ld_IAV <<- aa4
+  
+  Vp_RSV <<- aa5
+  tp_RSV <<- aa6
+  lg_RSV <<- aa7
+  ld_RSV <<- aa8
+  
+  kappa_IAV <<- aa9
+  tau_IAV <<- aa10
+  
+  kappa_RSV <<- aa11
+  tau_RSV <<- aa12
+  
+  alpha_IAV <- aa13
+  alpha_RSV <- aa14
+  
+  
+  viral_load <- function(t, Vp, tp, lambda_g, lambda_d) {
+    2 * 10^Vp / (exp(-lambda_g * (t - tp)) + exp(lambda_d * (t - tp)))
+  }
+  
+  # h_IAV <- function(delta_t) 1 / (1 + exp(-kappa_IAV * (delta_t - tau_IAV)))
+  # h_RSV <- function(delta_t) 1 / (1 + exp(-kappa_RSV * (delta_t - tau_RSV)))
+  
+  h_IAV <- function(delta_t) {
+    L <- 1/(1 + exp(-kappa_IAV * (delta_t - tau_IAV)))
+    (1 + alpha_IAV * L) / (1 + alpha_IAV)
+  }
+  
+  h_RSV <- function(delta_t) {
+    L <- 1/(1 + exp(-kappa_RSV * (delta_t - tau_RSV)))
+    (1 + alpha_RSV * L) / (1 + alpha_RSV)
+  }
+  
+  h_bidir <- function(delta_t, primary) {
+    if (primary == "IAV") return(h_IAV(delta_t))
+    else return(h_RSV(delta_t))
+  } 
+  
+  
+  LL = 0 
+  t_intro1 = 0
+  len_pair = length(unique(dat$pair))
+   
+  for(p in 1:len_pair){
+    
+    subset_data = dat %>% filter(pair == paste0("pair ", p))
+    t_max = unique(subset_data$point_max)
+    t_intro2 = unique(subset_data$t_chall)
+    
+    t <- seq(0, 25, 0.1)
+    idx1 <- which(t %in% 1:t_max)
+    idx2 <- which(t %in% c(1:t_max + t_intro2))
+   
+  
+  if(unique(subset_data$primary) == "IAV"){
+    V_IAV <- ifelse(
+      t >= t_intro1,
+      viral_load(t - t_intro1, Vp_IAV, tp_IAV, lg_IAV, ld_IAV) * h_bidir(t_intro2, "RSV"),
+      NA
+    )
+    
+    V_RSV <- ifelse(
+      t >= t_intro2,
+      viral_load(t - t_intro2, Vp_RSV, tp_RSV, lg_RSV, ld_RSV) * h_bidir(t_intro1, "IAV"),
+      NA
+    )
+    VL_IAV_true <-  V_IAV[idx1]
+    VL_RSV_true <-  V_RSV[idx2]
+  }else{
+    V_IAV <- ifelse(
+      t >= t_intro2,
+      viral_load(t - t_intro2, Vp_IAV, tp_IAV, lg_IAV, ld_IAV) * h_bidir(t_intro1, "RSV"),
+      NA
+    )
+    
+    V_RSV <- ifelse(
+      t >= t_intro1,
+      viral_load(t - t_intro1, Vp_RSV, tp_RSV, lg_RSV, ld_RSV) * h_bidir(t_intro2, "IAV"),
+      NA
+    )
+    VL_IAV_true <-  V_IAV[idx2]
+    VL_RSV_true <-  V_RSV[idx1]
+    }
+  
+  
+  data_fit_IAV <- subset_data %>% filter(virus == "IAV") %>% select(y) %>% as.matrix() %>% as.vector()
+  data_fit_RSV <- subset_data %>% filter(virus == "RSV") %>% select(y) %>% as.matrix() %>% as.vector()
+  
+  
+  LL_IAV <- sum(dnorm(x = log10(data_fit_IAV),
+                     mean = log10(VL_IAV_true),
+                     sd = 1,
+                     log = T))
+  
+  LL_RSV <- sum(dnorm(x = log10(data_fit_RSV),
+                         mean = log10(VL_RSV_true),
+                         sd = 1,
+                         log = T))
+  
+  LL = LL + LL_IAV + LL_RSV
+  
+  }
+  
+  
+  
+  return(LL)
+}
+
+
+
+# fitLL <- optim(par = c(8, 8, 1, 0.8),
+#                fn = empirical_fn, # the distance function to optimise
+#                dat = data_fit, # the dataset we fit to
+#                control = list(fnscale= -1)  # negative log likelihood # here we minimize the negative log likelihood
+# )
+
+
+initial_values <- c(9, 2, 7, 1,
+                    4.7, 5, 1.26, 0.5,
+                    5, 0,
+                    0, 0,
+                    1, 1)
+
+lower_bd <- c(6, 0.5, 6, .5,
+              4, 4, 1, .5,
+              0, 0,
+              0, 0,
+              0, 0)
+
+# upper_bd <- c(6, 0.5, 1, .5,
+#               2, 2, 1, .5,
+#               10, 10,
+#               10, 10)
+
+fitLL <- optim(par = initial_values,
+               fn = empirical_fn, # the distance function to optimise
+               dat = combined_data, # the dataset we fit to
+               method = "L-BFGS-B",
+               lower = lower_bd,
+               #upper = upper_bd,
+               control = list(fnscale= -1)  # negative log likelihood # here we minimize the negative log likelihood
+)
+
+
+
+
+
+
+parms <-list(Vp_IAV = fitLL$par[1],
+           tp_IAV = fitLL$par[2], 
+           lg_IAV = fitLL$par[3], 
+           ld_IAV = fitLL$par[4], 
+           
+           Vp_RSV = fitLL$par[5],
+           tp_RSV = fitLL$par[6], 
+           lg_RSV = fitLL$par[7], 
+           ld_RSV = fitLL$par[8], 
+           
+           kappa_IAV = fitLL$par[9],
+           tau_IAV = fitLL$par[10], 
+           
+           kappa_RSV = fitLL$par[11], 
+           tau_RSV = fitLL$par[12], 
+           
+           alpha_IAV = fitLL$par[13],
+           alpha_RSV = fitLL$par[14])
+
+
+##### model predictions ####
+ 
+
+viral_load <- function(t, Vp, tp, lambda_g, lambda_d) {
+  2 * 10^Vp / (exp(-lambda_g * (t - tp)) + exp(lambda_d * (t - tp)))
+}
+
+
+# h_IAV <- function(delta_t) 1 / (1 + exp(-parms$kappa_IAV * (delta_t - parms$tau_IAV)))
+# h_RSV <- function(delta_t) 1 / (1 + exp(-parms$kappa_RSV * (delta_t - parms$tau_RSV)))
+
+h_IAV <- function(delta_t) {
+  L <- 1/(1 + exp(-parms$kappa_IAV * (delta_t - parms$tau_IAV)))
+  (1 + parms$alpha_IAV * L) / (1 + parms$alpha_IAV)
+}
+
+h_RSV <- function(delta_t) {
+  L <- 1/(1 + exp(-parms$kappa_RSV * (delta_t - parms$tau_RSV)))
+  (1 + parms$alpha_RSV * L) / (1 + parms$alpha_RSV)
+}
+
+h_bidir <- function(delta_t, primary) {
+  if (primary == "IAV") return(h_IAV(delta_t))
+  else return(h_RSV(delta_t))
+} 
+
+#############################
+# t_intro1 <- 0
+# t_intro2 <- 3
+# 
+# t <- seq(0, 18, 0.1)
+# 
+# idx1 <- which(t %in% 1:15)
+# idx2 <- which(t %in% c(1:15 + t_intro2))
+# 
+# V_IAV <- ifelse(
+#   t >= t_intro1,
+#   viral_load(t - t_intro, parms$Vp_IAV, parms$tp_IAV, parms$lg_IAV, parms$ld_IAV) * h_bidir(t_intro2, "RSV"),
+#   NA
+# )
+# 
+# V_RSV <- ifelse(
+#   t >= t_intro2,
+#   viral_load(t - t_intro, parms$Vp_RSV, parms$tp_RSV, parms$lg_RSV, parms$ld_RSV) * h_bidir(t_intro1, "IAV"),
+#   NA
+# )
+#  
+# data_fit_IAV <- data_fit %>% filter(virus == "IAV")  
+# data_fit_RSV <- data_fit %>% filter(virus == "RSV")  
+
+
+
+#############################
+
+ 
+# Set up plotting area for 24 plots: 6 rows x 4 columns
+par(mfrow = c(6, 4), mar = c(3, 3, 2, 1))  # adjust margins as needed
+
+for(p in 1:24){
+  t_intro1 = 0
+  subset_data = combined_data %>% filter(pair == paste0("pair ", p))
+  t_max = unique(subset_data$point_max)
+  t_intro2 = unique(subset_data$t_chall)
+  
+  t <- seq(0, 25, 0.1)
+  idx1 <- which(t %in% 1:t_max)
+  idx2 <- which(t %in% c(1:t_max + t_intro2))
+  
+  if(unique(subset_data$primary) == "IAV"){
+    V_IAV <- ifelse(
+      t >= t_intro1,
+      viral_load(t - t_intro1, parms$Vp_IAV, parms$tp_IAV, parms$lg_IAV, parms$ld_IAV) * h_bidir(t_intro2, "RSV"),
+      NA
+    )
+    
+    V_RSV <- ifelse(
+      t >= t_intro2,
+      viral_load(t - t_intro2, parms$Vp_RSV, parms$tp_RSV, parms$lg_RSV, parms$ld_RSV) * h_bidir(t_intro1, "IAV"),
+      NA
+    )
+    
+    data_fit_IAV <- subset_data %>% filter(virus == "IAV") %>% pull(y)
+    data_fit_RSV <- subset_data %>% filter(virus == "RSV") %>% pull(y)
+    
+    plot(1:t_max, log10(data_fit_IAV), ylim = c(0, 10), xlim = c(0, 30), type = "p", col = "orange",
+         main = paste0("Primary: ", unique(subset_data$primary), ", Interval: ", t_intro2, "d"))
+    lines(t, log10(V_IAV), col = "orange", lwd = 2)
+    points((1:t_max) + t_intro2, log10(data_fit_RSV), col = "blue")
+    lines(t, log10(V_RSV), col = "blue", lwd = 2)
+    
+  } else {
+    V_IAV <- ifelse(
+      t >= t_intro2,
+      viral_load(t - t_intro2, parms$Vp_IAV, parms$tp_IAV, parms$lg_IAV, parms$ld_IAV) * h_bidir(t_intro1, "RSV"),
+      NA
+    )
+    
+    V_RSV <- ifelse(
+      t >= t_intro1,
+      viral_load(t - t_intro1, parms$Vp_RSV, parms$tp_RSV, parms$lg_RSV, parms$ld_RSV) * h_bidir(t_intro2, "IAV"),
+      NA
+    )
+    
+    data_fit_IAV <- subset_data %>% filter(virus == "IAV") %>% pull(y)
+    data_fit_RSV <- subset_data %>% filter(virus == "RSV") %>% pull(y)
+    
+    plot((1:t_max) + t_intro2, log10(data_fit_IAV), ylim = c(0, 12), xlim = c(0, 30), type = "p", col = "orange",
+         main = paste0("Primary: ", unique(subset_data$primary), ", Interval: ", t_intro2, "d"))
+    lines(t, log10(V_IAV), col = "orange", lwd = 2)
+    points(1:t_max, log10(data_fit_RSV), col = "blue")
+    lines(t, log10(V_RSV), col = "blue", lwd = 2)
+  }
+  # Add legend only to the first plot
+  if(p == 1){
+    legend("topright", legend = c("IAV", "RSV"),
+           col = c("orange", "blue"), lwd = 2, pch = 1, cex = 0.7, bty = "n")
+  }
+}
+
+
+
+parms
+
+ 
+my_windows <- seq(1,15,by = .1)
+par(mfrow = c(1,1), mar = c(5, 4, 4, 2))  # Bottom, left, top, right
+plot(my_windows, 1 - h_IAV(my_windows), type = "l", col = "skyblue", lwd = 3,
+     xlab = "Time window between infections (days)", 
+     ylab = "Interference effect to reduce viral load",
+     ylim = c(0,1))
+lines(my_windows, 1- h_RSV(my_windows), col = "purple", lwd = 3)
+legend("topright", legend = c("IAV → RSV", "RSV → IAV"),
+       col = c("skyblue", "purple"), lwd = 2, cex = 1, bty = "n")
+
+
