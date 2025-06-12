@@ -1,0 +1,132 @@
+library(dplyr)
+combined_data <- readRDS("combined_data.rds")
+ 
+# 1) per‐pair metadata (unchanged)
+meta <- combined_data %>%
+  distinct(pair, t_chall, primary) %>%
+  arrange(pair) %>%
+  mutate(
+    sample_id = row_number(),
+    delta     = t_chall,
+    primary_i = ifelse(primary=="IAV", 1L, 2L)
+  )
+
+# 2) build the stan_df with virus‐specific LODs
+stan_df <- combined_data %>%
+  left_join(meta, by="pair") %>%
+  transmute(
+    time      = t,
+    # set LOD by virus
+    lod       = ifelse(virus=="IAV", 1e6, 1e4),
+    # flag whether each obs is below its LOD
+    censored  = as.integer(y < lod),
+    # if below LOD, record y=LOD; otherwise keep y
+    y_obs     = ifelse(y < lod, lod, y),
+    virus_i   = ifelse(virus=="IAV", 1L, 2L),
+    sample_id = sample_id
+  )
+
+# 3) assemble stan_data
+stan_data <- list(
+  N         = nrow(stan_df),
+  time      = stan_df$time,
+  y         = stan_df$y_obs,
+  lod       = stan_df$lod,
+  censored  = stan_df$censored,
+  virus     = stan_df$virus_i,
+  sample_id = stan_df$sample_id,
+  S         = nrow(meta),
+  delta     = meta$delta,
+  primary   = meta$primary_i,
+  
+  # your control‐only medians
+  control_VpI_log = 8.2,
+  control_tpI     = 2.1,
+  control_lgI     = 1.0,
+  control_ldI     = 0.8,
+  
+  control_VpR_log = 4,
+  control_tpR     = 4.3,
+  control_lgR     = 1.2,
+  control_ldR     = 0.7
+)
+
+
+# Number of chains
+n_chains <- 4
+
+# Initialization function
+init_fun <- function() {
+  list(
+    # Hyper-means at control medians; small hyper-sds
+    mu_VpI_log    = stan_data$control_VpI_log,
+    sigma_VpI_log = 0.1,
+    mu_tpI        = stan_data$control_tpI,
+    sigma_tpI     = 0.5,
+    mu_lgI        = stan_data$control_lgI,
+    sigma_lgI     = 0.2,
+    mu_ldI        = stan_data$control_ldI,
+    sigma_ldI     = 0.2,
+    
+    mu_VpR_log    = stan_data$control_VpR_log,
+    sigma_VpR_log = 0.1,
+    mu_tpR        = stan_data$control_tpR,
+    sigma_tpR     = 0.5,
+    mu_lgR        = stan_data$control_lgR,
+    sigma_lgR     = 0.2,
+    mu_ldR        = stan_data$control_ldR,
+    sigma_ldR     = 0.2,
+    
+    mu_kI         = 5.0,
+    sigma_kI      = 1.0,
+    mu_tI         = 5.0,
+    sigma_tI      = 1.0,
+    mu_kR         = 1.0,
+    sigma_kR      = 1.0,
+    mu_tR         = 5.0,
+    sigma_tR      = 1.0,
+    mu_aI         = 5.0,
+    sigma_aI      = 1.0,
+    mu_aR         = 5.0,
+    sigma_aR      = 1.0,
+    
+    sigma         = 1.0,
+    
+    # Per-pair parameters at their respective hyper-means
+    VpI_log = rep(stan_data$control_VpI_log, stan_data$S),
+    tpI     = rep(stan_data$control_tpI,     stan_data$S),
+    lgI     = rep(stan_data$control_lgI,     stan_data$S),
+    ldI     = rep(stan_data$control_ldI,     stan_data$S),
+    
+    VpR_log = rep(stan_data$control_VpR_log, stan_data$S),
+    tpR     = rep(stan_data$control_tpR,     stan_data$S),
+    lgR     = rep(stan_data$control_lgR,     stan_data$S),
+    ldR     = rep(stan_data$control_ldR,     stan_data$S),
+    
+    kI = rep(3.0, stan_data$S),
+    tI = rep(5.0, stan_data$S),
+    kR = rep(3.0, stan_data$S),
+    tR = rep(5.0, stan_data$S),
+    aI = rep(5.0, stan_data$S),
+    aR = rep(5.0, stan_data$S)
+  )
+}
+
+# Build the list of inits for all chains
+inits_list <- replicate(n_chains, init_fun(), simplify = FALSE)
+
+
+options(mc.cores=parallel::detectCores()) # to utilise all cores available in your computer
+
+# 4) call stan 
+fit <- stan(
+  file    = "viral_interfere_hierar_censored.stan",
+  data    = stan_data,
+  chains  = n_chains,
+  iter    = 4000,
+  warmup = 2000,
+  init    = inits_list,
+  control = list(adapt_delta = 0.99, max_treedepth = 15)
+)
+
+saveRDS(fit, "fit1.rds")
